@@ -231,7 +231,7 @@
     </div>
   </div>
 
-  <footer>Links use Android intent:// URLs to open each Reel directly in Facebook Lite.</footer>
+  <footer>Links stay in their original facebook.com/m.facebook.com/etc. format. Tapping one triggers Android's app-chooser pop-up via a p.facebook.com intent.</footer>
 </div>
 
 <script>
@@ -274,7 +274,11 @@
   // actual video and is NOT tracking noise). Tracking params left in place
   // are a common cause of the native intent silently failing to open the
   // correct Reel/Post.
-  function stripTrackingParams(rawUrl){
+  //
+  // The original host (www.facebook.com, m.facebook.com, fb.watch, etc.) is
+  // deliberately left untouched here — this is purely a cleanup step for
+  // what gets displayed and stored, not a redirect target rewrite.
+  function cleanFacebookUrl(rawUrl){
     const webUrl = toCleanWebUrl(rawUrl);
     try{
       const u = new URL(webUrl);
@@ -303,23 +307,27 @@
     }
   }
 
-  // Build an Android intent:// deep link that opens the link directly inside
-  // the Facebook Lite app (com.facebook.lite) for that specific Reel/Post.
-  // Format: intent://[CLEAN_URL]#Intent;package=com.facebook.lite;scheme=https;end
-  function toFacebookLiteIntentLink(url){
-    // url is already the cleaned core link by the time it reaches here
-    // (stripped of tracking params in processLinks), but strip again
-    // defensively in case this is ever called with a raw value.
-    const cleanUrl = stripTrackingParams(url);
-    let hostAndPath;
+  // Build an Android intent:// URI that targets the p.facebook.com host
+  // (Facebook's "profile"/permalink domain) instead of the link's original
+  // display host, with no package name and an explicit VIEW action. Because
+  // p.facebook.com is registered as a valid host by multiple Facebook-family
+  // apps but usually isn't set up for silent single-app Android App Link
+  // auto-verification the way www./web.facebook.com often is, routing
+  // through it causes Android to fall back to its normal intent
+  // disambiguation flow — the system app-chooser pop-up — listing every
+  // installed app that can handle that domain (official Facebook, Facebook
+  // Lite, browsers, etc.) instead of silently auto-opening one app.
+  // Format: intent://p.facebook.com/[PATH]#Intent;scheme=https;action=android.intent.action.VIEW;end
+  function buildDualDomainIntent(displayUrl){
+    let pathAndQuery;
     try{
-      const u = new URL(cleanUrl);
-      hostAndPath = u.host + u.pathname + u.search;
+      const u = new URL(displayUrl);
+      pathAndQuery = u.pathname + u.search;
     }catch(e){
-      hostAndPath = cleanUrl.replace(/^https?:\/\//i, '');
+      pathAndQuery = displayUrl.replace(/^https?:\/\/[^/]+/i, '');
     }
-    return 'intent://' + hostAndPath +
-      '#Intent;package=com.facebook.lite;scheme=https;end';
+    return 'intent://p.facebook.com' + pathAndQuery +
+      '#Intent;scheme=https;action=android.intent.action.VIEW;end';
   }
 
   // Matches a URL (with or without protocol) optionally followed by an
@@ -342,7 +350,7 @@
   // optional click count sitting right next to it. Works regardless of
   // whether entries are separated by commas, newlines, or numbered lines,
   // and regardless of which Facebook link format or tracking params are
-  // attached — every match is normalized through stripTrackingParams so
+  // attached — every match is normalized through cleanFacebookUrl so
   // the same Reel pasted twice (once clean, once with ?mibextid=...)
   // dedupes correctly and always builds a working intent link.
   function processLinks(raw){
@@ -352,7 +360,7 @@
     while((match = URL_WITH_CLICKS_REGEX.exec(raw)) !== null){
       let rawMatch = match[1].trim().replace(/[),.]+$/, '');
       if(!rawMatch) continue;
-      const url = stripTrackingParams(rawMatch);
+      const url = cleanFacebookUrl(rawMatch);
       if(!url) continue;
       const clicksStr = match[2];
       const parsedClicks = clicksStr !== undefined ? parseInt(clicksStr, 10) : null;
@@ -394,7 +402,10 @@
       const li = document.createElement('li');
 
       const a = document.createElement('a');
-      a.href = toFacebookLiteIntentLink(item.url);
+      // href still carries a working intent link (so long-press / open-in-new-tab
+      // / middle-click still functions), but the actual navigation on a normal
+      // tap is intercepted and driven explicitly below.
+      a.href = buildDualDomainIntent(item.url);
       a.textContent = item.url;
       a.rel = 'noopener noreferrer';
       a.dataset.index = String(index);
@@ -404,12 +415,21 @@
       counter.className = 'click-count';
       counter.textContent = `ক্লিক: ${item.clicks} বার`;
 
-      a.addEventListener('click', () => {
+      a.addEventListener('click', (e) => {
+        // Intercept the default click/navigation behavior so we can build
+        // and dispatch the dual-domain (p.facebook.com) intent explicitly,
+        // triggering Android's system app-chooser pop-up rather than
+        // letting a single verified App Link silently auto-open one app.
+        e.preventDefault();
+
         item.clicks += 1;
         item.visited = true;
         a.classList.add('clicked');
         counter.textContent = `ক্লিক: ${item.clicks} বার`;
         saveItems(currentItems);
+
+        const intentUri = buildDualDomainIntent(item.url);
+        window.location.href = intentUri;
       });
 
       li.appendChild(a);
