@@ -202,105 +202,6 @@
     padding:8px 0 20px;
   }
 
-  /* Custom in-app choice popup */
-  .modal-overlay{
-    position:fixed;
-    inset:0;
-    background:rgba(0,0,0,0.6);
-    display:flex;
-    align-items:flex-end;
-    justify-content:center;
-    z-index:1000;
-    padding:0;
-    -webkit-backdrop-filter:blur(2px);
-    backdrop-filter:blur(2px);
-  }
-  .modal-overlay.hidden{
-    display:none;
-  }
-  .modal-box{
-    width:100%;
-    max-width:520px;
-    background:var(--panel);
-    border:1px solid var(--border);
-    border-bottom:none;
-    border-radius:18px 18px 0 0;
-    padding:18px 16px calc(16px + env(safe-area-inset-bottom, 0px));
-    box-shadow:0 -8px 30px rgba(0,0,0,0.5);
-    animation:modal-slide-up .18s ease-out;
-  }
-  @media (min-width:560px){
-    .modal-overlay{
-      align-items:center;
-    }
-    .modal-box{
-      border-radius:16px;
-      border-bottom:1px solid var(--border);
-    }
-  }
-  @keyframes modal-slide-up{
-    from{ transform:translateY(16px); opacity:0; }
-    to{ transform:translateY(0); opacity:1; }
-  }
-  .modal-title{
-    font-size:0.95rem;
-    font-weight:600;
-    color:var(--text);
-    margin-bottom:6px;
-  }
-  .modal-url{
-    font-size:0.8rem;
-    color:var(--text-dim);
-    background:var(--panel-2);
-    border:1px solid var(--border);
-    border-radius:8px;
-    padding:8px 10px;
-    word-break:break-all;
-    margin-bottom:16px;
-  }
-  .modal-actions{
-    display:flex;
-    flex-direction:column;
-    gap:10px;
-  }
-  .modal-btn{
-    width:100%;
-    padding:13px 16px;
-    border-radius:10px;
-    border:none;
-    font-size:0.95rem;
-    font-weight:600;
-    cursor:pointer;
-  }
-  .modal-btn:active{
-    transform:scale(0.98);
-  }
-  .modal-btn-main{
-    background:var(--accent);
-    color:#fff;
-  }
-  .modal-btn-main:hover{ background:var(--accent-hover); }
-  .modal-btn-lite{
-    background:var(--green);
-    color:#fff;
-  }
-  .modal-btn-lite:hover{ background:var(--green-hover); }
-  .modal-btn-cancel{
-    width:100%;
-    margin-top:14px;
-    padding:12px 16px;
-    background:transparent;
-    color:var(--text-dim);
-    border:1px solid var(--border);
-    border-radius:10px;
-    font-size:0.9rem;
-    font-weight:600;
-    cursor:pointer;
-  }
-  .modal-btn-cancel:hover{
-    border-color:var(--danger);
-    color:var(--danger);
-  }
 </style>
 </head>
 <body>
@@ -331,19 +232,7 @@
     </div>
   </div>
 
-  <footer>Links stay in their original facebook.com/m.facebook.com/etc. format. Tapping one opens an in-app choice popup.</footer>
-</div>
-
-<div id="linkModalOverlay" class="modal-overlay hidden">
-  <div class="modal-box">
-    <div class="modal-title">Open link with</div>
-    <div class="modal-url" id="modalUrlText"></div>
-    <div class="modal-actions">
-      <button id="modalOpenMain" class="modal-btn modal-btn-main" type="button">Open in Facebook (Main)</button>
-      <button id="modalOpenLite" class="modal-btn modal-btn-lite" type="button">Open in Facebook Lite</button>
-    </div>
-    <button id="modalCancel" class="modal-btn modal-btn-cancel" type="button">Cancel</button>
-  </div>
+  <footer>Links stay in their original www./web.facebook.com format. Tapping one opens Android's native app chooser.</footer>
 </div>
 
 <script>
@@ -355,15 +244,6 @@
   const copyBtn = document.getElementById('copyBtn');
   const listContainer = document.getElementById('listContainer');
   const statusMsg = document.getElementById('statusMsg');
-  const modalOverlay = document.getElementById('linkModalOverlay');
-  const modalUrlText = document.getElementById('modalUrlText');
-  const modalOpenMain = document.getElementById('modalOpenMain');
-  const modalOpenLite = document.getElementById('modalOpenLite');
-  const modalCancel = document.getElementById('modalCancel');
-
-  // Tracks which item/DOM elements the popup is currently open for, so the
-  // chosen button's handler knows exactly what to update and save.
-  let modalContext = null; // { item, linkEl, counterEl }
 
   // In-memory copy of the currently rendered items: [{ url, clicks, visited }]
   let currentItems = [];
@@ -428,13 +308,20 @@
     }
   }
 
-  // Build the "Open in Facebook (Main)" Android intent:// URI. This rewrites
-  // the navigation target's host to web.facebook.com (regardless of which
-  // host is actually displayed) and leaves the package unspecified, so
-  // Android resolves it through whatever app the user has set as default
-  // for that host — official Facebook, a browser, etc.
-  // Format: intent://web.facebook.com/[PATH]#Intent;scheme=https;end
-  function buildMainIntent(displayUrl){
+  // Build an Android intent:// URI with NO hardcoded package name, targeting
+  // the bare "facebook.com" host with an explicit VIEW action. Facebook
+  // itself typically registers Android App Link verification across the
+  // whole facebook.com domain family (www.facebook.com, web.facebook.com,
+  // m.facebook.com, etc.), so routing through the bare parent domain — with
+  // no package specified — lets Android's own intent-resolution/App Links
+  // system decide, and surface its native "Open with" chooser dialog when
+  // more than one verified handler (e.g. two separate Facebook Lite-style
+  // clones, one set as default for www.facebook.com and another for
+  // web.facebook.com) is registered on the device. Whichever app the user
+  // picks receives the exact same path/query, so it opens the same Reel,
+  // Post, or Video.
+  // Format: intent://facebook.com/[PATH]#Intent;scheme=https;action=android.intent.action.VIEW;end
+  function buildFacebookChooserIntent(displayUrl){
     let pathAndQuery;
     try{
       const u = new URL(displayUrl);
@@ -442,25 +329,8 @@
     }catch(e){
       pathAndQuery = displayUrl.replace(/^https?:\/\/[^/]+/i, '');
     }
-    return 'intent://web.facebook.com' + pathAndQuery +
-      '#Intent;scheme=https;end';
-  }
-
-  // Build the "Open in Facebook Lite" Android intent:// URI. This explicitly
-  // sets package=com.facebook.lite, which forces Android to hand the intent
-  // straight to the Facebook Lite app (if installed) rather than leaving it
-  // up to default-app resolution.
-  // Format: intent://web.facebook.com/[PATH]#Intent;package=com.facebook.lite;scheme=https;end
-  function buildLiteIntent(displayUrl){
-    let pathAndQuery;
-    try{
-      const u = new URL(displayUrl);
-      pathAndQuery = u.pathname + u.search;
-    }catch(e){
-      pathAndQuery = displayUrl.replace(/^https?:\/\/[^/]+/i, '');
-    }
-    return 'intent://web.facebook.com' + pathAndQuery +
-      '#Intent;package=com.facebook.lite;scheme=https;end';
+    return 'intent://facebook.com' + pathAndQuery +
+      '#Intent;scheme=https;action=android.intent.action.VIEW;end';
   }
 
   // Matches a URL (with or without protocol) optionally followed by an
@@ -537,9 +407,9 @@
       const a = document.createElement('a');
       // href still carries a working fallback intent link (so long-press /
       // open-in-new-tab / middle-click still does something reasonable),
-      // but a normal tap is intercepted below and opens the in-app popup
-      // instead of navigating directly.
-      a.href = buildMainIntent(item.url);
+      // but the actual navigation on a normal tap is intercepted and
+      // driven explicitly below.
+      a.href = buildFacebookChooserIntent(item.url);
       a.textContent = item.url;
       a.rel = 'noopener noreferrer';
       a.dataset.index = String(index);
@@ -550,12 +420,21 @@
       counter.textContent = `ক্লিক: ${item.clicks} বার`;
 
       a.addEventListener('click', (e) => {
-        // Intercept the default click/navigation behavior entirely — no
-        // Android intent is fired here. Instead, open the custom in-app
-        // choice popup and let the user pick which app to open the link
-        // with from inside that popup.
+        // Intercept the default click/navigation behavior so we can build
+        // and dispatch the bare-domain facebook.com intent explicitly,
+        // which is what lets Android's own native "Open with" chooser
+        // surface every app-link-verified handler for the domain (rather
+        // than a single app silently auto-opening).
         e.preventDefault();
-        openLinkModal(item, a, counter);
+
+        item.clicks += 1;
+        item.visited = true;
+        a.classList.add('clicked');
+        counter.textContent = `ক্লিক: ${item.clicks} বার`;
+        saveItems(currentItems);
+
+        const intentUri = buildFacebookChooserIntent(item.url);
+        window.location.href = intentUri;
       });
 
       li.appendChild(a);
@@ -565,54 +444,6 @@
     listContainer.innerHTML = '';
     listContainer.appendChild(ol);
   }
-
-  // Opens the custom dark-themed in-app choice popup for a given link item.
-  function openLinkModal(item, linkEl, counterEl){
-    modalContext = { item, linkEl, counterEl };
-    modalUrlText.textContent = item.url;
-    modalOverlay.classList.remove('hidden');
-  }
-
-  function closeLinkModal(){
-    modalOverlay.classList.add('hidden');
-    modalContext = null;
-  }
-
-  // Marks the link as clicked: increments its persistent counter, applies
-  // the visited (#888 + strikethrough) style to the list item, and saves.
-  function registerLinkClick(){
-    if(!modalContext) return;
-    const { item, linkEl, counterEl } = modalContext;
-    item.clicks += 1;
-    item.visited = true;
-    linkEl.classList.add('clicked');
-    counterEl.textContent = `ক্লিক: ${item.clicks} বার`;
-    saveItems(currentItems);
-  }
-
-  modalOpenMain.addEventListener('click', () => {
-    if(!modalContext) return;
-    const intentUri = buildMainIntent(modalContext.item.url);
-    registerLinkClick();
-    closeLinkModal();
-    window.location.href = intentUri;
-  });
-
-  modalOpenLite.addEventListener('click', () => {
-    if(!modalContext) return;
-    const intentUri = buildLiteIntent(modalContext.item.url);
-    registerLinkClick();
-    closeLinkModal();
-    window.location.href = intentUri;
-  });
-
-  modalCancel.addEventListener('click', closeLinkModal);
-
-  // Tapping the dimmed backdrop (but not the popup box itself) also
-  // dismisses the popup without registering a click.
-  modalOverlay.addEventListener('click', (e) => {
-    if(e.target === modalOverlay) closeLinkModal();
-  });
 
   function loadSaved(){
     try{
