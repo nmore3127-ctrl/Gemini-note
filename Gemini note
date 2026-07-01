@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Link Notepad Pro</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #121212; color: #fff; padding: 20px; margin: 0; }
+        .container { max-width: 500px; margin: 0 auto; }
+        h2 { color: #1877f2; text-align: center; margin-bottom: 20px; }
+        textarea { width: 100%; height: 140px; background: #1e1e1e; color: #fff; border: 1px solid #333; border-radius: 8px; padding: 12px; box-sizing: border-box; font-size: 15px; resize: none; }
+        textarea:focus { border-color: #1877f2; outline: none; background: #252525; }
+        .btn { width: 100%; background: #1877f2; color: white; border: none; padding: 12px; margin-top: 10px; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; transition: 0.2s; }
+        .btn:hover { background: #1565c0; }
+        
+        /* হেল্পার টেক্সট এর স্টাইল */
+        .info-text { font-size: 13px; color: #ff9800; text-align: center; margin-bottom: 10px; background: #221805; padding: 8px; border-radius: 6px; border: 1px dashed #ff9800; }
+        
+        .btn-copy { width: 100%; background: #28a745; margin-bottom: 15px; display: none; padding: 12px; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: bold; }
+        .btn-copy:hover { background: #218838; }
+        
+        .list-container { margin-top: 25px; background: #1e1e1e; padding: 15px; border-radius: 8px; border: 1px solid #333; }
+        ol { padding-left: 20px; margin: 0; }
+        li { margin-bottom: 15px; font-size: 15px; color: #e0e0e0; line-height: 1.4; }
+        
+        a { color: #4dadff; text-decoration: none; word-break: break-all; font-weight: 500; transition: 0.2s; }
+        a.clicked { color: #888888; text-decoration: line-through; }
+        
+        .counter-badge { background: #333; color: #aaa; font-size: 12px; padding: 2px 6px; border-radius: 4px; margin-left: 8px; font-weight: bold; }
+        a.clicked + .counter-badge { background: #444; color: #ffc107; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>Smart Link Notepad Pro</h2>
+        
+        <div class="info-text">💡 নিচের বক্সে ১ ক্লিকেই আপনার কিবোর্ডের উপরে লিংক শো করবে, সেখানে চাপুন!</div>
+        
+        <textarea id="rawLinks" placeholder="এখানে ক্লিক করে আপনার কিবোর্ডের ক্লিপবোর্ড থেকে লিংকটি সিলেক্ট করুন..." autofocus></textarea>
+        
+        <button class="btn" onclick="processLinks()">Format & Save</button>
+        
+        <div class="list-container">
+            <button id="copyAllBtn" class="btn-copy" onclick="copyAllLinks()">সব লিংক একসাথে কপি করুন</button>
+            <h3 style="margin-top:0; color:#1877f2; display: inline-block;">সংরক্ষিত লিংকসমূহ:</h3>
+            <ol id="formattedList"></ol>
+        </div>
+    </div>
+
+    <script>
+        window.onload = function() { 
+            loadSavedLinks();
+            // অ্যাপ ওপেন হওয়ামাত্র বক্সটি যেন নিজে থেকেই রেডি থাকে
+            document.getElementById('rawLinks').focus();
+        };
+
+        function processLinks() {
+            let input = document.getElementById('rawLinks').value;
+            if(!input.trim()) return alert('দয়া করে কিছু লিংক পেস্ট করুন!');
+            
+            let linksArray = input.split(',');
+            let savedArray = localStorage.getItem('saved_reels') ? JSON.parse(localStorage.getItem('saved_reels')) : [];
+
+            linksArray.forEach((link) => {
+                let cleanLink = link.trim();
+                if(cleanLink) {
+                    let cleanUrlWithoutProtocol = cleanLink.replace('https://', '').replace('http://', '');
+                    let liteDeepLink = `intent://${cleanUrlWithoutProtocol}#Intent;package=com.facebook.lite;scheme=https;end`;
+                    
+                    savedArray.push({
+                        original: cleanLink, 
+                        native: liteDeepLink,
+                        clicks: 0,
+                        isClicked: false
+                    });
+                }
+            });
+
+            localStorage.setItem('saved_reels', JSON.stringify(savedArray));
+            document.getElementById('rawLinks').value = '';
+            renderList(savedArray);
+        }
+
+        function registerClick(index) {
+            let saved = localStorage.getItem('saved_reels');
+            if(saved) {
+                let savedArray = JSON.parse(saved);
+                savedArray[index].clicks += 1;
+                savedArray[index].isClicked = true;
+                localStorage.setItem('saved_reels', JSON.stringify(savedArray));
+                renderList(savedArray);
+            }
+        }
+
+        function renderList(savedArray) {
+            let listHtml = '';
+            let copyBtn = document.getElementById('copyAllBtn');
+            
+            if(savedArray.length > 0) {
+                copyBtn.style.display = 'block';
+            } else {
+                copyBtn.style.display = 'none';
+            }
+
+            savedArray.forEach((item, index) => {
+                let clickedClass = item.isClicked ? 'class="clicked"' : '';
+                listHtml += `<li>
+                    <a href="${item.native}" ${clickedClass} onclick="registerClick(${index})" target="_blank">${item.original}</a>
+                    <span class="counter-badge">ক্লিক: ${item.clicks} বার</span>
+                </li>`;
+            });
+            document.getElementById('formattedList').innerHTML = listHtml;
+        }
+
+        function loadSavedLinks() {
+            let saved = localStorage.getItem('saved_reels');
+            if(saved) {
+                renderList(JSON.parse(saved));
+            }
+        }
+
+        function copyAllLinks() {
+            let saved = localStorage.getItem('saved_reels');
+            if(!saved) return;
+            
+            let savedArray = JSON.parse(saved);
+            let textToCopy = "";
+            
+            savedArray.forEach((item, index) => {
+                textToCopy += `${index + 1}. ${item.original} (ক্লিক: ${item.clicks} বার)\n`;
+            });
+
+            navigator.clipboard.writeText(textToCopy).then(() => {
+                alert('সব লিংক সিরিয়াল অনুযায়ী ক্লিপবোর্ডে কপি হয়েছে!');
+            }).catch(err => {
+                alert('কপি করতে সমস্যা হয়েছে: ', err);
+            });
+        }
+    </script>
+</body>
+</html>
