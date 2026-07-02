@@ -201,6 +201,7 @@
     font-size:0.75rem;
     padding:8px 0 20px;
   }
+
 </style>
 </head>
 <body>
@@ -218,7 +219,7 @@
       <button id="clearBtn">Clear All</button>
     </div>
     <div class="status" id="statusMsg"></div>
-    <div class="hint">Tip: tap inside the box, then use your keyboard's own "Paste" suggestion — no browser clipboard permission needed.</div>
+    <div class="hint">Tip: tap inside the box, then use your keyboard's own "Paste" suggestion — no browser clipboard permission needed. You can paste a plain comma-separated list, or paste a previously copied "Copy All Links" list back in and its click counts will be restored.</div>
   </div>
 
   <div class="card list-card">
@@ -231,7 +232,7 @@
     </div>
   </div>
 
-  <footer>Links use Android intent:// URLs to open each Reel directly in Facebook Lite.</footer>
+  <footer>Links stay in their original www./web.facebook.com format. Tapping one opens Android's native app chooser.</footer>
 </div>
 
 <script>
@@ -256,39 +257,139 @@
     return clean;
   }
 
-  // Build an Android intent:// deep link that opens the link directly inside
-  // the Facebook Lite app (com.facebook.lite) for that specific Reel/Post.
-  // Format: intent://[CLEAN_URL]#Intent;package=com.facebook.lite;scheme=https;end
-  function toFacebookLiteIntentLink(url){
-    const webUrl = toCleanWebUrl(url);
-    let hostAndPath;
+  // Known Facebook tracking/telemetry query params that carry no meaning
+  // for the link's destination and can break the native intent handler if
+  // left in place.
+  const FB_TRACKING_PARAMS = new Set([
+    'mibextid','fbclid','sfnsn','extid','ref','ref_component','ref_page',
+    'source','hrc','refid','notif_id','notif_t','_rdc','_rdr','eav',
+    'paipv','anchor_component','surface','if_id','hc_ref','rdid'
+  ]);
+
+  // Strips tracking junk (?mibextid=..., &sfnsn=mo, fbclid, __tn__/__cft__
+  // telemetry keys, hash fragments, etc.) from ANY Facebook link variant —
+  // facebook.com, www.facebook.com, m.facebook.com, web.facebook.com,
+  // fb.watch, /share/r/..., /reel/..., /watch/... — while carefully keeping
+  // any query param that's actually part of the link's identity (e.g. the
+  // "v" param on web.facebook.com/watch/?v=12345, which points at the
+  // actual video and is NOT tracking noise). Tracking params left in place
+  // are a common cause of the native intent silently failing to open the
+  // correct Reel/Post.
+  //
+  // The original host (www.facebook.com, m.facebook.com, fb.watch, etc.) is
+  // deliberately left untouched here — this is purely a cleanup step for
+  // what gets displayed and stored, not a redirect target rewrite.
+  function cleanFacebookUrl(rawUrl){
+    const webUrl = toCleanWebUrl(rawUrl);
     try{
       const u = new URL(webUrl);
-      hostAndPath = u.host + u.pathname + u.search;
+      let path = u.pathname;
+      // Normalize a single trailing slash away (but keep a bare "/")
+      if(path.length > 1 && path.endsWith('/')){
+        path = path.slice(0, -1);
+      }
+      const params = new URLSearchParams(u.search);
+      Array.from(params.keys()).forEach(key => {
+        // Strip explicitly known tracking keys, plus any Facebook internal
+        // telemetry key (they all start with a double underscore, e.g.
+        // __tn__, __cft__[0], __xts__).
+        if(FB_TRACKING_PARAMS.has(key) || key.startsWith('__')){
+          params.delete(key);
+        }
+      });
+      const cleanedQuery = params.toString();
+      const search = cleanedQuery ? '?' + cleanedQuery : '';
+      // Hash fragments on Facebook links are always tracking/session noise
+      // and are intentionally dropped.
+      return u.protocol + '//' + u.host + path + search;
     }catch(e){
-      hostAndPath = webUrl.replace(/^https?:\/\//i, '');
+      // Manual fallback for malformed pastes that URL() can't parse
+      return webUrl.split('#')[0];
     }
-    return 'intent://' + hostAndPath +
-      '#Intent;package=com.facebook.lite;scheme=https;end';
   }
 
-  function parseInputToUrls(raw){
-    return raw
-      .split(',')
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
+  // Build an Android intent:// URI with NO hardcoded package name, targeting
+  // the bare "facebook.com" host with an explicit VIEW action. Facebook
+  // itself typically registers Android App Link verification across the
+  // whole facebook.com domain family (www.facebook.com, web.facebook.com,
+  // m.facebook.com, etc.), so routing through the bare parent domain — with
+  // no package specified — lets Android's own intent-resolution/App Links
+  // system decide, and surface its native "Open with" chooser dialog when
+  // more than one verified handler (e.g. two separate Facebook Lite-style
+  // clones, one set as default for www.facebook.com and another for
+  // web.facebook.com) is registered on the device. Whichever app the user
+  // picks receives the exact same path/query, so it opens the same Reel,
+  // Post, or Video.
+  // Format: intent://facebook.com/[PATH]#Intent;scheme=https;action=android.intent.action.VIEW;end
+  function buildFacebookChooserIntent(displayUrl){
+    let pathAndQuery;
+    try{
+      const u = new URL(displayUrl);
+      pathAndQuery = u.pathname + u.search;
+    }catch(e){
+      pathAndQuery = displayUrl.replace(/^https?:\/\/[^/]+/i, '');
+    }
+    return 'intent://facebook.com' + pathAndQuery +
+      '#Intent;scheme=https;action=android.intent.action.VIEW;end';
   }
 
-  // Merge freshly parsed URLs with any existing click/visited data so that
-  // re-formatting the same list doesn't reset counters.
-  function buildItemsFromUrls(urls, previousItems){
+  // Matches a URL (with or without protocol) optionally followed by an
+  // embedded click-count annotation in either of the formats produced by
+  // the "Copy All Links" button, e.g.:
+  //   "1. https://facebook.com/reel/123 - ক্লিক: 5 বার"
+  //   "1. https://facebook.com/reel/123 (ক্লিক: 5 বার)"
+  //   "1. https://facebook.com/reel/123 (Clicks: 5)"
+  // It also matches bare URLs separated only by commas or newlines with no
+  // click info at all, so raw pasted lists keep working exactly as before.
+  // The path/query segment is captured broadly (letters, digits, and the
+  // usual URL punctuation including "?", "&", "=", "%") so it works across
+  // every Facebook link shape: /share/r/..., /reel/..., /watch/..., fb.watch
+  // short links, m.facebook.com, web.facebook.com, and tracking-param-heavy
+  // share links alike — the junk is stripped out afterwards, not up front.
+  const URL_WITH_CLICKS_REGEX =
+    /((?:https?:\/\/)?(?:www\.|m\.|web\.)?[a-zA-Z0-9\-.]+\.[a-zA-Z]{2,}(?:\/[a-zA-Z0-9\-._~%/]*)?(?:\?[a-zA-Z0-9\-._~%&=]*)?)\s*(?:[-(]\s*(?:ক্লিক|Clicks?)\s*[:：]?\s*(\d+)\s*(?:বার)?\)?)?/gi;
+
+  // Scans the raw textarea content for every URL it can find, along with an
+  // optional click count sitting right next to it. Works regardless of
+  // whether entries are separated by commas, newlines, or numbered lines,
+  // and regardless of which Facebook link format or tracking params are
+  // attached — every match is normalized through cleanFacebookUrl so
+  // the same Reel pasted twice (once clean, once with ?mibextid=...)
+  // dedupes correctly and always builds a working intent link.
+  function processLinks(raw){
+    const found = new Map(); // cleanUrl -> parsedClicks (number) | null
+    let match;
+    URL_WITH_CLICKS_REGEX.lastIndex = 0;
+    while((match = URL_WITH_CLICKS_REGEX.exec(raw)) !== null){
+      let rawMatch = match[1].trim().replace(/[),.]+$/, '');
+      if(!rawMatch) continue;
+      const url = cleanFacebookUrl(rawMatch);
+      if(!url) continue;
+      const clicksStr = match[2];
+      const parsedClicks = clicksStr !== undefined ? parseInt(clicksStr, 10) : null;
+      const finalClicks = (parsedClicks !== null && !isNaN(parsedClicks)) ? parsedClicks : null;
+      const existing = found.has(url) ? found.get(url) : undefined;
+      // If this URL was already seen, keep whichever occurrence actually
+      // carried a click count rather than letting a later bare duplicate
+      // wipe out a previously parsed count.
+      found.set(url, finalClicks !== null ? finalClicks : (existing !== undefined ? existing : null));
+    }
+    return Array.from(found.entries()).map(([url, parsedClicks]) => ({ url, parsedClicks }));
+  }
+
+  // Merge freshly parsed entries with any existing click/visited data.
+  // If the pasted text itself carried a click count (from a previously
+  // copied list), that count wins and is restored as-is. Otherwise, fall
+  // back to whatever count this URL already had in memory, or 0 if new.
+  function buildItemsFromParsed(parsedEntries, previousItems){
     const prevByUrl = new Map((previousItems || []).map(item => [item.url, item]));
-    return urls.map(url => {
+    return parsedEntries.map(({ url, parsedClicks }) => {
       const prev = prevByUrl.get(url);
+      const clicks = parsedClicks !== null ? parsedClicks : (prev ? prev.clicks : 0);
       return {
         url,
-        clicks: prev ? prev.clicks : 0,
-        visited: prev ? prev.visited : false
+        clicks,
+        visited: clicks > 0
       };
     });
   }
@@ -304,7 +405,11 @@
       const li = document.createElement('li');
 
       const a = document.createElement('a');
-      a.href = toFacebookLiteIntentLink(item.url);
+      // href still carries a working fallback intent link (so long-press /
+      // open-in-new-tab / middle-click still does something reasonable),
+      // but the actual navigation on a normal tap is intercepted and
+      // driven explicitly below.
+      a.href = buildFacebookChooserIntent(item.url);
       a.textContent = item.url;
       a.rel = 'noopener noreferrer';
       a.dataset.index = String(index);
@@ -314,12 +419,22 @@
       counter.className = 'click-count';
       counter.textContent = `ক্লিক: ${item.clicks} বার`;
 
-      a.addEventListener('click', () => {
+      a.addEventListener('click', (e) => {
+        // Intercept the default click/navigation behavior so we can build
+        // and dispatch the bare-domain facebook.com intent explicitly,
+        // which is what lets Android's own native "Open with" chooser
+        // surface every app-link-verified handler for the domain (rather
+        // than a single app silently auto-opening).
+        e.preventDefault();
+
         item.clicks += 1;
         item.visited = true;
         a.classList.add('clicked');
         counter.textContent = `ক্লিক: ${item.clicks} বার`;
         saveItems(currentItems);
+
+        const intentUri = buildFacebookChooserIntent(item.url);
+        window.location.href = intentUri;
       });
 
       li.appendChild(a);
@@ -375,16 +490,20 @@
 
   saveBtn.addEventListener('click', () => {
     const raw = inputArea.value;
-    const urls = parseInputToUrls(raw);
-    if(urls.length === 0){
+    const parsedEntries = processLinks(raw);
+    if(parsedEntries.length === 0){
       showStatus('Please enter at least one URL first.', true);
       return;
     }
-    const items = buildItemsFromUrls(urls, currentItems);
+    const items = buildItemsFromParsed(parsedEntries, currentItems);
     const ok = saveItems(items);
     renderList(items);
+    const restoredCount = parsedEntries.filter(e => e.parsedClicks !== null).length;
     if(ok){
-      showStatus(`Saved ${items.length} link${items.length !== 1 ? 's' : ''}.`, false);
+      const restoredNote = restoredCount > 0
+        ? ` (restored click counts for ${restoredCount})`
+        : '';
+      showStatus(`Saved ${items.length} link${items.length !== 1 ? 's' : ''}${restoredNote}.`, false);
     }else{
       showStatus('Could not save to local storage.', true);
     }
