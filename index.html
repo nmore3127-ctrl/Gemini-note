@@ -232,7 +232,7 @@
     </div>
   </div>
 
-  <footer>Links stay in their original www./web.facebook.com format. Tapping one opens Android's native app chooser.</footer>
+  <footer>Links keep their original www.facebook.com format. Tapping one opens Android's chooser between your two Facebook Lite apps.</footer>
 </div>
 
 <script>
@@ -308,20 +308,23 @@
     }
   }
 
-  // Build an Android intent:// URI with NO hardcoded package name, targeting
-  // the bare "facebook.com" host with an explicit VIEW action. Facebook
-  // itself typically registers Android App Link verification across the
-  // whole facebook.com domain family (www.facebook.com, web.facebook.com,
-  // m.facebook.com, etc.), so routing through the bare parent domain — with
-  // no package specified — lets Android's own intent-resolution/App Links
-  // system decide, and surface its native "Open with" chooser dialog when
-  // more than one verified handler (e.g. two separate Facebook Lite-style
-  // clones, one set as default for www.facebook.com and another for
-  // web.facebook.com) is registered on the device. Whichever app the user
-  // picks receives the exact same path/query, so it opens the same Reel,
-  // Post, or Video.
-  // Format: intent://facebook.com/[PATH]#Intent;scheme=https;action=android.intent.action.VIEW;end
-  function buildFacebookChooserIntent(displayUrl){
+  // Build an Android intent:// URI tailored to this user's exact dual-Lite
+  // setup: Lite App 1 is registered as the default handler for
+  // p.facebook.com, and Lite App 2 is registered as the default handler
+  // for web.facebook.com. Routing through the bare "facebook.com" host
+  // (no package name) with an explicit VIEW action, PLUS an
+  // S.android.intent.extra.ALTERNATE_URLS extra listing both the
+  // p.facebook.com and web.facebook.com equivalents of the exact same
+  // path, is what surfaces Android's native "Open with" chooser dialog
+  // listing both installed Lite apps — instead of one silently
+  // auto-opening — because the intent now explicitly names both
+  // registered/verified alternate destinations for the OS to resolve.
+  // Whichever Lite app the user picks receives the same path, so it opens
+  // the exact same Reel, Post, or Video.
+  // Format:
+  //   intent://facebook.com/[PATH]#Intent;scheme=https;action=android.intent.action.VIEW;
+  //     S.android.intent.extra.ALTERNATE_URLS=[https://p.facebook.com/[PATH],https://web.facebook.com/[PATH]];end
+  function buildDualLiteChooserIntent(displayUrl){
     let pathAndQuery;
     try{
       const u = new URL(displayUrl);
@@ -329,8 +332,17 @@
     }catch(e){
       pathAndQuery = displayUrl.replace(/^https?:\/\/[^/]+/i, '');
     }
+
+    const pFacebookUrl = 'https://p.facebook.com' + pathAndQuery;
+    const webFacebookUrl = 'https://web.facebook.com' + pathAndQuery;
+    // The ALTERNATE_URLS extra value is comma-separated and must be
+    // percent-encoded so the comma, colon, and slashes inside it don't get
+    // misread as intent:// URI syntax themselves.
+    const alternateUrls = encodeURIComponent(pFacebookUrl + ',' + webFacebookUrl);
+
     return 'intent://facebook.com' + pathAndQuery +
-      '#Intent;scheme=https;action=android.intent.action.VIEW;end';
+      '#Intent;scheme=https;action=android.intent.action.VIEW;' +
+      'S.android.intent.extra.ALTERNATE_URLS=' + alternateUrls + ';end';
   }
 
   // Matches a URL (with or without protocol) optionally followed by an
@@ -405,11 +417,12 @@
       const li = document.createElement('li');
 
       const a = document.createElement('a');
-      // href still carries a working fallback intent link (so long-press /
-      // open-in-new-tab / middle-click still does something reasonable),
-      // but the actual navigation on a normal tap is intercepted and
-      // driven explicitly below.
-      a.href = buildFacebookChooserIntent(item.url);
+      // href holds the exact dual-app intent (with the ALTERNATE_URLS extra
+      // pointing at both p.facebook.com and web.facebook.com), so long-press
+      // / open-in-new-tab / middle-click still does something reasonable —
+      // but the actual navigation on a normal tap is intercepted and driven
+      // explicitly below.
+      a.href = buildDualLiteChooserIntent(item.url);
       a.textContent = item.url;
       a.rel = 'noopener noreferrer';
       a.dataset.index = String(index);
@@ -421,10 +434,10 @@
 
       a.addEventListener('click', (e) => {
         // Intercept the default click/navigation behavior so we can build
-        // and dispatch the bare-domain facebook.com intent explicitly,
-        // which is what lets Android's own native "Open with" chooser
-        // surface every app-link-verified handler for the domain (rather
-        // than a single app silently auto-opening).
+        // and dispatch the dual-app intent explicitly. The
+        // ALTERNATE_URLS extra naming both p.facebook.com and
+        // web.facebook.com is what surfaces Android's native "Open with"
+        // chooser listing both installed Lite apps.
         e.preventDefault();
 
         item.clicks += 1;
@@ -433,7 +446,7 @@
         counter.textContent = `ক্লিক: ${item.clicks} বার`;
         saveItems(currentItems);
 
-        const intentUri = buildFacebookChooserIntent(item.url);
+        const intentUri = buildDualLiteChooserIntent(item.url);
         window.location.href = intentUri;
       });
 
